@@ -5,16 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(lldb) 启动",
+            "name": "g++ - 生成和调试活动文件",
             "type": "cppdbg",
             "request": "launch",
-            "program": "输入程序名称，例如 ${workspaceFolder}/a.out",
+            "program": "${fileDirname}/${fileBasenameNoExtension}",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": false,
-            "MIMode": "lldb"
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "为 gdb 启用整齐打印",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "preLaunchTask": "g++ build active file",
+            "miDebuggerPath": "/usr/bin/gdb"
         }
     ]
 }
