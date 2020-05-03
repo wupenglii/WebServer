@@ -109,6 +109,7 @@ public:
         static int m_epollfd;
         static int m_user_count;
         MYSQL *mysql;
+        
 
 private:
         int m_sockfd;
