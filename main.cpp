@@ -1,175 +1,156 @@
-#define _GNU_SOURCE 1
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <assert.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <poll.h>
+#include <cassert>
+#include <sys/epoll.h>
 
-#define USER_LIMIT 5             /*最大用户数量*/
-#define BUFFER_SIZE 64       /*读缓冲区的大小*/
-#define FD_LIMIT 65535        /*文件描述符数量限制*/
-/*客户数据：客户端socket地址、待写到客户端的数据的位置、从客户端读入的数据*/
-struct client_data{
-    sockaddr_in address;
-    char* write_buf;
-    char buf[BUFFER_SIZE];
-};
+#include "./threadpool/threadpool.h"
+#include "./http/http_conn.h"
 
-int setnonblocking(int fd){
-    int old_option = fcntl(fd,F_GETFL);
-    int new_option = old_option | O_NONBLOCK;
-    fcntl(fd,F_SETFL,new_option);
-    return old_option;
+#define MAX_FD 65536               /*最大文件描述符*/
+#define MAX_EVENT_NUMBER 10000     //最大事件数
+
+#define LT  //水平触发阻塞
+
+//三个函数在http_conn.cpp中定义，改变链接属性
+extern int addfd(int epollfd,int fd, bool one_shot);
+extern int remove(int epollfd,int fd);
+extern int setnonblocking(int fd);
+
+//设置信号函数
+// void addsig(int sig, void (handler)(int),bool restart = true){
+//     struct sigaction sa;
+//     memset( &sa, '\0',sizeof( sa ));
+//     sa.sa_handler = handler;
+//     if( restart ){
+//         sa.sa_flags |= SA_RESTART;
+//     }
+//     sigfillset( &sa.sa_mask);
+//     assert(sigaction(sig,&sa,NULL)!=-1);
+// }
+
+void show_error(int connfd, const char* info){
+    printf("%s",info);
+    send(connfd,info,strlen(info),0);
+    close(connfd);
 }
 
 int main(int argc,char * argv[]){
 
-    if(argc <= 2){
+    if(argc <= 1){
         printf("usage: %s ip_address port_number\n",basename(argv[0]));
         return 1;
     }
-    const char* ip = argv[1];
+
     int port = atoi(argv[2]);
+
+    /*忽略SIGPIPE信号*/
+    //addsig( SIGPIPE, SIG_IGN);
+
+    /*创建线程池*/
+    threadpool< http_conn >* pool = NULL;
+    try{
+        pool = new threadpool< http_conn >;
+    }catch(...){
+        return 1;
+    }
+
+    /*预先为每个可能的客户连接分配一个http_conn对象*/
+    http_conn* users = new http_conn[MAX_FD];
+    assert(users);
+    int user_count = 0;
+
+    //创建套接子,返回listenfd
+    int listenfd = socket(PF_INET,SOCK_STREAM,0);
+    assert(listenfd >= 0);
+    struct linger tmp = { 1,0 };
+    setsockopt( listenfd,SOL_SOCKET,SO_LINGER,&tmp,sizeof(tmp));
+
 
     int ret = 0;
     struct sockaddr_in address;
     bzero(&address,sizeof(address));
     address.sin_family = AF_INET;
-    inet_pton(AF_INET,ip,&address.sin_addr);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(port);
 
-    int listenfd = socket(PF_INET,SOCK_STREAM,0);
-    assert(listenfd >= 0);
-
+    //设置端口复用，绑定端口
+    int flag = 1;
+    setsockopt(listenfd,SOL_SOCKET,SO_REUSEADDR,&flag,sizeof(flag));
     ret = bind(listenfd, (struct sockaddr*)&address,sizeof(address));
-    assert(ret != -1);
-
+    assert(ret >= 0);
     ret = listen(listenfd, 5);
-    assert(ret != -1);
+    assert(ret >= 0);
 
-    /* 创建users数组，分配FD——LIMIT个client_data对象。可以预期
-    每个可能的socket连接都可以获得一个这样的对象，并且socket的值
-    可以直接用来索引（作为数组的下标）socket连接对应client_data对
-    像，这是将socket和客户数据关联的简单而高效的方式*/
-
-    client_data* users = new client_data[FD_LIMIT];
-    /*尽管我们分配了足够多的client_data对象，但为了提高poll的性能
-    必须要限制用户的数量*/
-    pollfd fds[USER_LIMIT+1];
-    int user_counter = 0;
-    for(int i = 1; i <= USER_LIMIT; ++i){
-        fds[i].fd = -1;
-        fds[i].events = 0;
-    }
-    fds[0].fd = listenfd;
-    fds[0].events = POLLIN | POLLERR;
-    fds[0].revents = 0;
+    //创建内核事件表
+    epoll_event events[MAX_EVENT_NUMBER];
+    int epollfd = epoll_create(5);
+    assert(epollfd != -1);
+    addfd(epollfd,listenfd, false);
+    http_conn::m_epollfd = epollfd;
 
     while(1){
-        ret = poll( fds, user_counter+1, -1);
-        if( ret < 0 ){
-            printf( "poll failure\n" );
+        int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER,-1);
+        if( (number < 0) &&(errno != EINTR)){
+            printf("epoll failure");
             break;
         }
 
-        for(int i = 0; i < user_counter+1; ++i){
-            if( ( fds[i].fd == listenfd ) && (fds[i].revents & POLLIN )){
+        for(int i = 0; i < number; i++){
+            int sockfd = events[i].data.fd;
+
+            //处理新到的客户连接
+            if(sockfd == listenfd){
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof(client_address);
-                int connfd = accept(listenfd, (struct sockaddr*)&client_address, &client_addrlength);
 
+                int connfd = accept(listenfd, (struct sockaddr *)&client_address,&client_addrlength);
                 if( connfd < 0 ){
-                    printf("errno is: %d\n",errno);
+                    printf("errno is:%d\n",errno);
                     continue;
                 }
-                /*如果请求太多，则关闭新到的连接*/
-                if( user_counter >= USER_LIMIT ){
-                    const char* info = "too many users\n";
-                    printf("%s", info);
-                    send(connfd, info, strlen(info),0);
-                    close(connfd);
-                    continue;
+                if( http_conn::m_user_count >= MAX_FD ){
+                    show_error( connfd, "Internal server busy");
                 }
-                /*对于新的连接，同时修改fds和users数组。*/
-                user_counter++;
-                users[connfd].address = client_address;
-                setnonblocking( connfd );
-                fds[user_counter].fd = connfd;
-                fds[user_counter].events = POLLIN | POLLRDHUP | POLLERR;
-                fds[user_counter].revents = 0;
-                printf("comes a new user, now have %d users\n",user_counter);
-            }
-            else if(fds[i].revents & POLLERR){
-                printf( "get an error from %d\n",fds[i].fd );
-                char errors[100];
-                memset(errors, '\0',100);
-                socklen_t length = sizeof(errors);
-                if(getsockopt(fds[i].fd,SOL_SOCKET,SO_ERROR,&errors,&length)<0){
-                    printf("get socket option failed\n");
-                }
-                continue;
-            }
-            else if(fds[i].revents & POLLRDHUP){
-                /*如果客户端关闭连接，则服务器也关闭对应的连接，并将用户总数减1*/
-                users[fds[i].fd] = users[fds[user_counter].fd];
-                close(fds[i].fd);
-                fds[i] = fds[user_counter];
-                i--;
-                user_counter--;
-                printf("a client left\n");
-            }
-            else if(fds[i].revents & POLLIN){
-                int connfd = fds[i].fd;
-                memset(users[connfd].buf,'\0',BUFFER_SIZE);
-                ret = recv(connfd,users[connfd].buf,BUFFER_SIZE-1,0);
-                printf("get %d bytes of client data %s from %d\n",ret,users[connfd].buf,connfd);
 
-                if(ret < 0){
-                    if(errno !=EAGAIN){
-                        close(connfd);
-                        users[fds[i].fd] = users[fds[user_counter].fd];
-                        fds[i] = fds[user_counter];
-                        i--;
-                        user_counter--;
-                    }
+                /* 初始化客户连接*/
+                users[connfd].init( connfd, client_address );
+
+            }else if(events[i].events & ( EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
+                /*如果有异常，直接关闭客户连接*/
+                users[sockfd].close_conn();
+            }
+            //处理客户连接上接收到的数据
+            else if(events[i].events & EPOLLIN){
+                /*根据读的结果，决定是将任务添加到线程池，还是关闭连接*/
+                if( users[sockfd].read()  ){
+                    pool->append( users + sockfd);
+                }else{
+                    users[sockfd].close_conn();
                 }
-                else if(ret == 0){
+
+            }
+            else if(events[i].events & EPOLLOUT){
+                /*根据写的结果，决定是否关闭连接*/
+                if( !users[sockfd].write()){
+                    users[sockfd].close_conn();
+                }else{
 
                 }
-                else{
-                    /*如果收到客户数据，则通知其他socket连接准备写数据*/
-                    for(int j = 1; j <=user_counter; ++j){
-                        if(fds[j].fd == connfd){
-                            continue;
-                        }
-                        fds[j].events |= ~POLLIN;
-                        fds[j].events |= POLLIN;
-                        users[fds[j].fd].write_buf = users[connfd].buf;
-                    }
-                }
-            }
-            else if(fds[i].revents & POLLOUT){
-                int connfd = fds[i].fd;
-                if(!users[connfd].write_buf){
-                    continue;
-                }
-                ret = send(connfd, users[connfd].write_buf,strlen(users[connfd].write_buf),0);
-                users[connfd].write_buf = NULL;
-                fds[i].events |= ~POLLOUT;
-                fds[i].events |= POLLIN;
             }
 
         }
         
     }
-    delete[] users;
+    close(epollfd);
     close(listenfd);
+    delete [] users;
+    delete pool;
     return 0;
 }
