@@ -1,3 +1,5 @@
-webserver: main.o
-main.o: main.cpp
-	g++ -c main.cpp -o main.o
+webserver: main.c ./threadpool/threadpool.h ./http/http_conn.cpp ./http/http_conn.h ./lock/locker.h 
+		g++ -o server main.c ./threadpool/threadpool.h ./http/http_conn.cpp ./http/http_conn.h ./lock/locker.h
+clean:
+		rm -r server
+		
