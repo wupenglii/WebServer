@@ -88,7 +88,7 @@ void http_conn::init(){
 /*从状态机*/
 http_conn::LINE_STATUS http_conn::parse_line(){
     char temp;
-    for(;m_checked_idx < m_read_idx; ++m_checked_idx);{
+    for(;m_checked_idx < m_read_idx; ++m_checked_idx){
         temp = m_read_buf[m_checked_idx];
         if(temp == '\r'){
             if((m_checked_idx + 1) == m_read_idx){
@@ -137,28 +137,31 @@ bool http_conn::read(){
 
 /*解析HTTP请求行，获得请求方法、目标URL，以及HTTP版本号*/
 http_conn::HTTP_CODE http_conn::parse_request_line(char* text){
-    m_url = strpbrk(text,"\t");
+    m_url = strpbrk(text," \t");
     if(!m_url){
         return BAD_REQUEST;
     }
     *m_url++ = '\0';
 
-    char* method = text;
+    char *method = text;
     if(strcasecmp(method,"GET")==0){
         m_method = GET;
+    }else if(strcasecmp(method,"POST")==0){
+        m_method = POST;
     }
     else{
         return BAD_REQUEST;
     }
 
-    m_url += strspn(m_url, "\t");
-    m_version = strpbrk(m_url,"\t");
+    m_url += strspn(m_url, " \t");
+    m_version = strpbrk(m_url," \t");
     if(!m_version){
         return BAD_REQUEST;
     }
     *m_version++ = '\0';
-    m_version += strspn(m_version,"\t");
-    if(strcasecmp(m_version,"HTTP/1.1")!=0){
+    m_version += strspn(m_version," \t");
+    
+    if(strcasecmp(m_version,"HTTP/1.1") != 0){
         return BAD_REQUEST;
     }
     if(strncasecmp(m_url,"http://",7)==0){
@@ -218,6 +221,9 @@ http_conn::HTTP_CODE http_conn::parse_headers(char* text){
 http_conn::HTTP_CODE http_conn::parse_content(char* text){
     if(m_read_idx >= (m_content_length + m_checked_idx)){
         text[m_content_length] = '\0';
+
+        //POST请求中最后为输入的用户名和密码
+        m_string = text;
         return GET_REQUEST;
     }
     return NO_REQUEST;
@@ -230,7 +236,7 @@ http_conn::HTTP_CODE http_conn::process_read(){
     char* text = 0;
 
     while(((m_check_state == CHECK_STATE_CONTENT) &&(line_status==LINE_OK))
-    || ((line_status == parse_line())==LINE_OK)){
+    || ((line_status = parse_line())==LINE_OK)){
         text = get_line();
         m_start_line = m_checked_idx;
         printf("got 1 http line: %s\n",text);
@@ -276,6 +282,26 @@ http_conn::HTTP_CODE http_conn::process_read(){
 /*当得到一个完整、正确的HTTP请求时，我们就分析目标文件的属性。如果目标文件存在、对所有用户可
 读，且不是目录，则使用mmap将其映射到内存地址m_file_address处，并告诉调用者文件获取成功*/
 http_conn::HTTP_CODE http_conn::do_request(){
+
+    std::string str(m_string);
+    Json::CharReaderBuilder readerBuilder;
+    Json::Value root;
+    bool res;
+    JSONCPP_STRING errs;
+    
+    std::unique_ptr<Json::CharReader> const jsonReader(readerBuilder.newCharReader());
+
+    res = jsonReader->parse(str.c_str(), str.c_str()+str.length(), &root, &errs);
+    //从字符串中读取数据
+    if(res){
+        std::cout<<"goods:"<<root["goods"].asString()<<std::endl;
+        std::cout<<"goodsid:"<<root["goodsid"].asString()<<std::endl;
+        std::cout<<"height:"<<root["height"].asString()<<std::endl;
+        std::cout<<"length"<<root["length"].asString()<<std::endl;
+        std::cout<<"width"<<root["width"].asString()<<std::endl;
+    }
+
+
     strcpy(m_real_file,doc_root);
     int len = strlen(doc_root);
     strncpy(m_real_file + len, m_url,FILENAME_LEN - len - 1);
@@ -402,6 +428,7 @@ bool http_conn::process_write(HTTP_CODE ret){
                 return false;
             }
             break;
+
         }
         case BAD_REQUEST:
         {
@@ -433,22 +460,27 @@ bool http_conn::process_write(HTTP_CODE ret){
         case FILE_REQUEST:
         {
             add_status_line(200,ok_200_title);
-            if(m_file_stat.st_size != 0){
-                add_headers(m_file_stat.st_size);
-                m_iv[0].iov_base = m_write_buf;
-                m_iv[0].iov_len = m_write_idx;
-                m_iv[1].iov_base = m_file_address;
-                m_iv[1].iov_len = m_file_stat.st_size;
-                m_iv_count = 2;
-                return true;
+            const char* ok_string = "你好，你好";
+            add_headers(strlen(ok_string));
+            if(!add_content(ok_string)){
+                return false;
             }
-            else{
-                const char* ok_string = "<html><body></body></html>";
-                add_headers(strlen(ok_string));
-                if(!add_content(ok_string)){
-                    return false;
-                }
-            }
+            m_iv[0].iov_base = m_write_buf;
+            m_iv[0].iov_len = m_write_idx;
+            m_iv_count = 2;
+            return true;
+            // if(m_file_stat.st_size != 0){
+            //     add_headers(m_file_stat.st_size);
+            //     m_iv[0].iov_base = m_write_buf;
+            //     m_iv[0].iov_len = m_write_idx;
+            //     m_iv[1].iov_base = m_file_address;
+            //     m_iv[1].iov_len = m_file_stat.st_size;
+            //     m_iv_count = 2;
+            //     return true;
+            // }
+            // else{
+            
+            //}
         }
         default:{
             return false;
@@ -469,6 +501,7 @@ void http_conn::process(){
         modfd(m_epollfd,m_sockfd,EPOLLIN);
         return;
     }
+
 
     bool write_ret = process_write(read_ret);
     if(!write_ret){

@@ -48,7 +48,7 @@ int main(int argc,char * argv[]){
         return 1;
     }
 
-    int port = atoi(argv[2]);
+    int port = atoi(argv[1]);
 
     /*忽略SIGPIPE信号*/
     //addsig( SIGPIPE, SIG_IGN);

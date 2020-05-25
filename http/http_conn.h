@@ -20,7 +20,11 @@
 #include<errno.h>
 #include<sys/wait.h>
 #include<sys/uio.h>
+#include<string>
+#include<iostream>
+#include<fstream>
 
+#include "../3rdparty/json/json.h"
 #include "../lock/locker.h"
 
 
