@@ -1,5 +1,18 @@
 #include "http_conn.h"
 #include <fstream>
+#include <mysql/mysql.h>
+
+//同步校验
+#define SYNSQL
+
+//CGI多进程使用连接池
+//#define CGISQLPOOL
+
+//CGI多进程不用连接池
+//#define CGISQL
+
+//#define ET                         //边缘触发非阻塞
+#define LT                             //水平触发阻塞
 
 /*定义HTTP相应的一些状态信息*/
 const char *ok_200_title = "OK";
@@ -13,6 +26,38 @@ const char *error_500_title = "Internal Error";
 const char *error_500_form="There was an unusual problem serving the request file.\n";
 /*网站的根目录*/
 const char *doc_root = "";
+
+#ifdef SYNSQL
+
+void http_conn::initmysql_result(connection_pool *connPool){
+    //先从连接池中取一个连接
+    MYSQL *mysql = NULL;
+    connectionRAII mysqlcon(&mysql,connPool);
+
+    //在gooddata表中检索goodid数据
+    if(mysql_query(mysql,"")){
+        printf("SELECT error:%s\n",mysql_error(mysql));
+    }
+
+    //从表中检索完整的结果集
+    MYSQL_RES *result = mysql_store_result(mysql);
+
+    //返回所有字段结构的列数
+    int num_fields = mysql_num_fields(result);
+
+    //返回所有字段结构的数组
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+
+    //从结果集中获取下一行，将对应的信息放入结构体中
+    while(MYSQL_ROW row = mysql_fetch_row(result)){
+        string temp1(row[0]);
+        string temp2(row[1]);
+        
+    }
+
+}
+
+#endif
 
 int setnonblocking(int fd){
     int old_option = fcntl(fd,F_GETFL);
@@ -283,24 +328,50 @@ http_conn::HTTP_CODE http_conn::process_read(){
 读，且不是目录，则使用mmap将其映射到内存地址m_file_address处，并告诉调用者文件获取成功*/
 http_conn::HTTP_CODE http_conn::do_request(){
 
-    std::string str(m_string);
-    Json::CharReaderBuilder readerBuilder;
-    Json::Value root;
-    bool res;
-    JSONCPP_STRING errs;
-    
-    std::unique_ptr<Json::CharReader> const jsonReader(readerBuilder.newCharReader());
+    if(m_string!=NULL&&m_string[0]!='\0'){
+        std::string str(m_string);
+        Json::CharReaderBuilder readerBuilder;
+        Json::Value root;
+        bool res;
+        JSONCPP_STRING errs;
+        
+        std::unique_ptr<Json::CharReader> const jsonReader(readerBuilder.newCharReader());
 
-    res = jsonReader->parse(str.c_str(), str.c_str()+str.length(), &root, &errs);
-    //从字符串中读取数据
-    if(res){
-        std::cout<<"goods:"<<root["goods"].asString()<<std::endl;
-        std::cout<<"goodsid:"<<root["goodsid"].asString()<<std::endl;
-        std::cout<<"height:"<<root["height"].asString()<<std::endl;
-        std::cout<<"length"<<root["length"].asString()<<std::endl;
-        std::cout<<"width"<<root["width"].asString()<<std::endl;
+        res = jsonReader->parse(str.c_str(), str.c_str()+str.length(), &root, &errs);
+        //从字符串中读取数据
+        if(res){
+            std::cout<<"goods:"<<root["goods"].asString()<<std::endl;
+            std::cout<<"goodsid:"<<root["goodsid"].asString()<<std::endl;
+            std::cout<<"height:"<<root["height"].asString()<<std::endl;
+            std::cout<<"length"<<root["length"].asString()<<std::endl;
+            std::cout<<"width"<<root["width"].asString()<<std::endl;
+
+//同步线程插入数据
+#ifdef SYNSQL
+    pthread_mutex_t lock;
+    pthread_mutex_init(&lock,NULL);
+
+    char *sql_insert = (char *)malloc(sizeof(char)*200);
+    strcpy(sql_insert,"INSERT INTO goods(goodid,goodname,height,length,width)VALUES(");
+    strcat(sql_insert,"'");
+    strcat(sql_insert,root["goodsid"].asString().c_str());
+    strcat(sql_insert,"', '");
+    strcat(sql_insert,root["goods"].asString().c_str());
+    strcat(sql_insert,"', '");
+    strcat(sql_insert,root["height"].asString().c_str());
+    strcat(sql_insert,"', '");
+    strcat(sql_insert,root["length"].asString().c_str());
+    strcat(sql_insert,"', '");
+    strcat(sql_insert,root["width"].asString().c_str());
+    strcat(sql_insert,"');");
+
+    pthread_mutex_lock(&lock);
+    int res = mysql_query(mysql,sql_insert);
+    pthread_mutex_unlock(&lock);
+
+#endif 
+        }
     }
-
 
     strcpy(m_real_file,doc_root);
     int len = strlen(doc_root);
@@ -313,9 +384,9 @@ http_conn::HTTP_CODE http_conn::do_request(){
         return FORBIDDEN_REQUEST;
     }
 
-    if(S_ISDIR(m_file_stat.st_mode)){
-        return BAD_REQUEST;
-    }
+    // if(S_ISDIR(m_file_stat.st_mode)){
+    //     return BAD_REQUEST;
+    // }
 
     int fd = open(m_real_file,O_RDONLY);
     m_file_address = (char* )mmap(0,m_file_stat.st_size,PROT_READ,

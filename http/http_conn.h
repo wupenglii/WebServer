@@ -26,6 +26,7 @@
 
 #include "../3rdparty/json/json.h"
 #include "../lock/locker.h"
+#include "../CGImysql/sql_connection_pool.h"
 
 
 class http_conn
@@ -94,8 +95,8 @@ public:
         sockaddr_in * get_address(){
                 return &m_address;
         }
-        //void initmysql_result(connection_pool *connPool);
-        //void initresultFile(connection_pool *connPool);
+        void initmysql_result(connection_pool *connPool);
+        void initresultFile(connection_pool *connPool);
 
 private:
         /*初始化连接*/
@@ -131,7 +132,7 @@ public:
         static int m_epollfd;
         /*统计用户数量*/
         static int m_user_count;
-        //MYSQL *mysql;
+        MYSQL *mysql;
         
 
 private:
