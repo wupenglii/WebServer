@@ -9,6 +9,7 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/webserver",
+            //"program": "${workspaceFolder}/CGImysql/test",
             "args": ["8080"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

@@ -14,9 +14,11 @@
 #include "./http/http_conn.h"
 #include "./CGImysql/sql_connection_pool.h"
 #include "./lock/locker.h"
+#include "./timer/timer.h"
 
 #define MAX_FD 65536               /*最大文件描述符*/
 #define MAX_EVENT_NUMBER 10000     //最大事件数
+#define TIMESLOT   5            //最小超时单位
 
 #define SYNSQL       //同步数据库校验
 //#define CGISQLPOOL //CGI数据库校验
@@ -27,6 +29,11 @@
 extern int addfd(int epollfd,int fd, bool one_shot);
 extern int remove(int epollfd,int fd);
 extern int setnonblocking(int fd);
+
+//设置定时器相关参数
+static int pipefd[2];
+static sort_timer_lst timer_lst;
+static int epollfd = 0;
 
 //设置信号函数
 // void addsig(int sig, void (handler)(int),bool restart = true){
@@ -39,6 +46,22 @@ extern int setnonblocking(int fd);
 //     sigfillset( &sa.sa_mask);
 //     assert(sigaction(sig,&sa,NULL)!=-1);
 // }
+
+//定时处理任务，重新定时以不断触发SIGALRM信号
+void timer_headler(){
+    timer_lst.tick();
+    alarm(TIMESLOT);
+}
+
+//定时器回调函数，删除非活动连接在socket上的注册事件,并关闭
+void cb_func(client_data *user_data){
+    epoll_ctl(epollfd,EPOLL_CTL_DEL,user_data->sockfd,0);
+    assert(user_data);
+    close(user_data->sockfd);
+    http_conn::m_user_count--;
+    printf("close fd %d",user_data->sockfd);
+    //Log::get_instance()->flush();
+}
 
 void show_error(int connfd, const char* info){
     printf("%s",info);
@@ -65,7 +88,7 @@ int main(int argc,char * argv[]){
     /*创建线程池*/
     threadpool< http_conn >* pool = NULL;
     try{
-        pool = new threadpool< http_conn >;
+        pool = new threadpool< http_conn >(connPool);
     }catch(...){
         return 1;
     }
@@ -77,7 +100,7 @@ int main(int argc,char * argv[]){
 
 #ifdef SYNSQL
     //初始化数据库读取表
-    //users->initmysql_result(connPool);
+    users->initmysql_result(connPool);
 #endif
 
 #ifdef CGISQLPOOL

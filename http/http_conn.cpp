@@ -35,7 +35,7 @@ void http_conn::initmysql_result(connection_pool *connPool){
     connectionRAII mysqlcon(&mysql,connPool);
 
     //在gooddata表中检索goodid数据
-    if(mysql_query(mysql,"")){
+    if(mysql_query(mysql,"SELECT goodid,goodname,height,length,width FROM goods")){
         printf("SELECT error:%s\n",mysql_error(mysql));
     }
 
@@ -54,6 +54,7 @@ void http_conn::initmysql_result(connection_pool *connPool){
         string temp2(row[1]);
         
     }
+
 
 }
 
