@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <exception>
 #include <pthread.h>
-
 #include "../lock/locker.h"
 #include "../CGImysql/sql_connection_pool.h"
 
@@ -53,7 +52,7 @@ threadpool< T >::threadpool(connection_pool *connPool,int thread_number,int max_
 
     /*创建thread_number个线程，并将它们都设置为脱离线程*/
     for(int i = 0; i < thread_number; ++i){
-        printf("create the %dth thread\n",i);
+        // printf("create the %dth thread\n",i);
         if(pthread_create(m_threads + i, NULL,worker,this) != 0){
             delete [] m_threads;
             throw std::exception();
@@ -75,7 +74,7 @@ template< typename T >
 bool threadpool< T >::append(T* request){
     /*操作工作队列时一定要加锁，因为它被所有线程共享*/
     m_queuelocker.lock();
-    if( m_workqueue.size() > m_max_requests){
+    if( m_workqueue.size() >= m_max_requests){
         m_queuelocker.unlock();
         return false;
     }

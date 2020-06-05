@@ -1,6 +1,7 @@
 #include "http_conn.h"
 #include <fstream>
 #include <mysql/mysql.h>
+#include "../log/log.h"
 
 //同步校验
 #define SYNSQL
@@ -70,7 +71,13 @@ int setnonblocking(int fd){
 void addfd(int epollfd, int fd, bool one_shot){
     epoll_event event;
     event.data.fd = fd;
+#ifdef ET
     event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+#endif
+
+#ifdef LT
+    event.events = EPOLLIN | EPOLLRDHUP;
+#endif
     if( one_shot ){
         event.events |= EPOLLONESHOT;
     }
@@ -86,7 +93,13 @@ void removefd( int epollfd, int fd){
 void modfd(int epollfd, int fd,int ev){
     epoll_event event;
     event.data.fd = fd;
+#ifdef ET
     event.events = ev | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+#endif
+
+#ifdef LT
+    event.events = ev | EPOLLONESHOT | EPOLLRDHUP;
+#endif
     epoll_ctl( epollfd,EPOLL_CTL_MOD,fd,&event);
 }
 
@@ -105,8 +118,8 @@ void http_conn::init(int sockfd, const sockaddr_in& addr){
     m_sockfd = sockfd;
     m_address = addr;
     /*如下两行是为了避免TIME_WAIT状态，仅用于调试，实际使用时应该去掉*/
-    int reuse = 1;
-    setsockopt(m_sockfd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
+    //int reuse = 1;
+    //setsockopt(m_sockfd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
     addfd(m_epollfd,sockfd,true);
     m_user_count++;
 
@@ -114,9 +127,11 @@ void http_conn::init(int sockfd, const sockaddr_in& addr){
 }
 
 void http_conn::init(){
+    mysql = NULL;
+    bytes_to_send = 0;
+    bytes_have_send = 0;
     m_check_state = CHECK_STATE_REQUESTLINE;
     m_linger = false;
-
     m_method = GET;
     m_url = 0;
     m_version = 0;
@@ -126,6 +141,7 @@ void http_conn::init(){
     m_checked_idx = 0;
     m_read_idx = 0;
     m_write_idx = 0;
+    cgi = 0;
     memset(m_read_buf,'\0',READ_BUFFER_SIZE);
     memset(m_write_buf,'\0',WRITE_BUFFER_SIZE);
     memset(m_real_file,'\0',FILENAME_LEN);
@@ -257,7 +273,8 @@ http_conn::HTTP_CODE http_conn::parse_headers(char* text){
         m_host = text;
     }
     else{
-        printf("oop! unknow header %s\n",text);
+        LOG_INFO("oop! unknow header %s",text);
+        Log::get_instance()->flush();
     }
 
     return NO_REQUEST;
@@ -285,7 +302,8 @@ http_conn::HTTP_CODE http_conn::process_read(){
     || ((line_status = parse_line())==LINE_OK)){
         text = get_line();
         m_start_line = m_checked_idx;
-        printf("got 1 http line: %s\n",text);
+        LOG_INFO("%s",text);
+        Log::get_instance()->flush();
 
         switch(m_check_state){
             case CHECK_STATE_REQUESTLINE:
@@ -417,7 +435,7 @@ bool http_conn::write(){
 
     while(1){
         temp = writev(m_sockfd,m_iv,m_iv_count);
-        if(temp <= -1){
+        if(temp < 0){
             /*如果TCP写缓冲没有空间，则等待下一轮EPOLLOUT事件。虽然在此期间。服务器
             无法立即接收到同一客户的下一个请求，但这可以保证连接的完整性*/
             if(errno == EAGAIN){
@@ -460,6 +478,8 @@ bool http_conn::add_response(const char* format, ...){
     }
     m_write_idx += len;
     va_end(arg_list);
+    LOG_INFO("request:%s",m_write_buf);
+    Log::get_instance()->flush();
     return true;
 }
 
@@ -475,6 +495,10 @@ bool http_conn::add_headers(int content_len){
 
 bool http_conn::add_content_length(int content_len){
     return add_response("Content-Length: %d\r\n",content_len);
+}
+
+bool http_conn::add_content_type(){
+    return add_response("Content-Type:%s\r\n","text/html");
 }
 
 bool http_conn::add_linger(){
@@ -563,6 +587,7 @@ bool http_conn::process_write(HTTP_CODE ret){
     m_iv[0].iov_base = m_write_buf;
     m_iv[0].iov_len = m_write_idx;
     m_iv_count = 1;
+    bytes_to_send = m_write_idx;
     return true;
 }
 

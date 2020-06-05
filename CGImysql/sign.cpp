@@ -9,9 +9,8 @@
 #include <sstream>
 using namespace std;
 
-#define CGISQL         //不使用连接池
-
-//#define CGISQLPOOL  //使用连接池
+//#define CGISQL         //不使用连接池
+#define CGISQLPOOL  //使用连接池
 
 int main(int argc, char *argv[]){
 

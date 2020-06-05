@@ -4,14 +4,13 @@
 #include <time.h>
 #include<netinet/in.h>
 #include <stdio.h>
-#define BUFFER_SIZE 64
+#include "../log/log.h"
 class util_timer;   /*前向声明*/
 
 /*用户数据结构：客户端socket地址、socket文件描述符、读缓存和定时器*/
 struct client_data{
     sockaddr_in address;
     int sockfd;
-    char buf[BUFFER_SIZE];
     util_timer* timer;
 };
 
@@ -128,7 +127,8 @@ public:
         if(!head){
             return;
         }
-        printf("timer tick\n");
+        LOG_INFO("%s","timer tick");
+        Log::get_instance()->flush();
         time_t cur = time(NULL);   /*获取系统当前的时间*/
         util_timer* tmp = head;
         /*从头结点开始依次处理每个定时器，直到遇到一个尚未到期的定时器，这就是定时器的核心逻辑*/

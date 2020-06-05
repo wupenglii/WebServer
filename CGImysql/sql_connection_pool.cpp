@@ -112,6 +112,7 @@ void connection_pool::DestroyPool(){
 
         lock.unlock();
     }
+    lock.unlock();
 }
 
 //当前空闲的连接数
