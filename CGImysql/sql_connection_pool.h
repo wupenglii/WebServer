@@ -22,7 +22,7 @@ public:
     //单例模式
     static connection_pool *GetInstance();
 
-    void init(string url,string User,string PassWord,string DataBaseName,int Port,unsigned int MaxConn);
+    void init(string url,string User,string PassWord,string DataBaseName,int Port,unsigned int MaxConn,int close_log);
 
 private:
     connection_pool();
@@ -41,6 +41,7 @@ private:
     string User;                               //登陆数据库用户名
     string PassWord;                    //登陆数据库密码
     string DatabaseName;         //使用数据库名
+    int m_close_log;
 };
 
 class connectionRAII{

@@ -15,10 +15,11 @@ class threadpool
 public:
     /*参数thread_number是线程池中线程的数量，max_requests是请求队列中最多允许的、等待
     处理的请求的数量*/
-    threadpool(connection_pool *connPool,int thread_number = 8, int max_requests = 10000);
+    threadpool(int actor_model,connection_pool *connPool,int thread_number = 8, int max_requests = 10000);
     ~threadpool();
     /*往请求队列中添加任务*/
-    bool append(T* request);
+    bool append(T *request,int state);
+    bool append_p(T* request);
 
 private:
     /*工作线程运行的函数，它不断从工作队列中取出任务并执行之*/
@@ -34,11 +35,12 @@ private:
     sem m_queuestat;   /*是否有任务需要处理*/
     bool m_stop;   /*是否结束线程*/
     connection_pool *m_connPool;   //数据库
+    int m_actor_model;
 };
 
 template< typename T >
-threadpool< T >::threadpool(connection_pool *connPool,int thread_number,int max_requests):
-                      m_thread_number(thread_number), m_max_requests(max_requests),
+threadpool< T >::threadpool(int actor_model,connection_pool *connPool,int thread_number,int max_requests):
+                      m_actor_model(actor_model),m_thread_number(thread_number), m_max_requests(max_requests),
                       m_stop(false), m_threads(NULL),m_connPool(connPool)
 {
     if((thread_number <= 0) || (max_requests <= 0)){
@@ -71,14 +73,30 @@ threadpool< T >::~threadpool(){
 }
 
 template< typename T >
-bool threadpool< T >::append(T* request){
+bool threadpool< T >::append(T* request,int state){
     /*操作工作队列时一定要加锁，因为它被所有线程共享*/
     m_queuelocker.lock();
     if( m_workqueue.size() >= m_max_requests){
         m_queuelocker.unlock();
         return false;
     }
+    request->m_state = state;
     m_workqueue.push_back( request);
+    m_queuelocker.unlock();
+    m_queuestat.post();
+    return true;
+}
+
+template <typename T>
+bool threadpool<T>::append_p(T *request)
+{
+    m_queuelocker.lock();
+    if (m_workqueue.size() >= m_max_requests)
+    {
+        m_queuelocker.unlock();
+        return false;
+    }
+    m_workqueue.push_back(request);
     m_queuelocker.unlock();
     m_queuestat.post();
     return true;
@@ -107,9 +125,36 @@ void threadpool< T >::run(){
             continue;
         }
 
-        connectionRAII mysqlcon(&request->mysql,m_connPool);
-
-        request->process();
+        if(1 == m_actor_model){
+            if(0 == request->m_state){
+                if(request->read_once()){
+                    request->improv = 1;
+                    connectionRAII mysqlcon(&request->mysql,m_connPool);
+                    request->process();
+                }
+                else{
+                    request->improv = 1;
+                    request->timer_flag = 1;
+                }
+            }
+            else
+            {
+                if (request->write())
+                {
+                    request->improv = 1;
+                }
+                else
+                {
+                    request->improv = 1;
+                    request->timer_flag = 1;
+                }
+            }
+        }
+        else
+        {
+            connectionRAII mysqlcon(&request->mysql, m_connPool);
+            request->process();
+        }
     }
 }
 #endif
